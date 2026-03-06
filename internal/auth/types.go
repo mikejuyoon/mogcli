@@ -3,13 +3,14 @@ package auth
 import "time"
 
 type DelegatedLoginInput struct {
-	ProfileName string
-	Audience    string
-	ClientID    string
-	Authority   string
-	TenantID    string
-	Scopes      []string
-	Secret      string // Optional client secret for confidential client apps
+	ProfileName  string
+	Audience     string
+	ClientID     string
+	Authority    string
+	TenantID     string
+	Scopes       []string
+	Secret       string // Optional client secret for confidential client apps
+	RefreshToken string // Optional pre-existing refresh token for headless login
 }
 
 type AppOnlyLoginInput struct {

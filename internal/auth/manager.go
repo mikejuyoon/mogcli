@@ -162,6 +162,13 @@ func (m *Manager) LoginDelegated(ctx context.Context, input DelegatedLoginInput,
 		}
 	}
 
+	// If a refresh token is provided, skip interactive login and seed the
+	// token cache directly via an immediate token refresh. This enables
+	// fully headless/browserless authentication.
+	if rt := strings.TrimSpace(input.RefreshToken); rt != "" {
+		return m.loginDelegatedRefreshToken(ctx, input, writeMessage)
+	}
+
 	if useWAM() {
 		return m.loginDelegatedWAM(ctx, input, writeMessage)
 	}
@@ -312,6 +319,73 @@ func (m *Manager) loginDelegatedDeviceCode(ctx context.Context, input DelegatedL
 	}
 
 	return AccountInfo{}, errors.New("device code flow timed out")
+}
+
+// loginDelegatedRefreshToken seeds the token cache from a pre-existing refresh
+// token, then performs an immediate token refresh to validate the token and
+// obtain an ID token for identity verification. This enables fully headless
+// authentication without a browser-based device code flow.
+func (m *Manager) loginDelegatedRefreshToken(ctx context.Context, input DelegatedLoginInput, writeMessage func(string)) (AccountInfo, error) {
+	refreshToken := strings.TrimSpace(input.RefreshToken)
+	if refreshToken == "" {
+		return AccountInfo{}, ErrMissingRefreshToken
+	}
+
+	if writeMessage != nil {
+		writeMessage("Authenticating with refresh token...")
+	}
+
+	// Build the token refresh request. Use .default scope so the token
+	// inherits all permissions already consented on the app registration.
+	// Individual scopes (Mail.Read, etc.) can fail with AADSTS65001 if
+	// they weren't part of the original consent flow.
+	req := url.Values{}
+	req.Set("grant_type", "refresh_token")
+	req.Set("client_id", input.ClientID)
+	req.Set("refresh_token", refreshToken)
+	req.Set("scope", "offline_access openid profile "+graphDefaultScope())
+
+	// Include client_secret for confidential clients.
+	if secret := strings.TrimSpace(input.Secret); secret != "" {
+		req.Set("client_secret", secret)
+	}
+
+	body, status, err := m.doFormWithStatus(ctx, endpoint(input.Authority, "/oauth2/v2.0/token"), req)
+	if err != nil {
+		return AccountInfo{}, err
+	}
+	defer secureZero(body)
+
+	if status != http.StatusOK {
+		var oe oauthErrorResponse
+		_ = json.Unmarshal(body, &oe)
+		return AccountInfo{}, fmt.Errorf("refresh token login failed (%s): %s", oe.Error, strings.TrimSpace(oe.ErrorDescription))
+	}
+
+	var tr tokenResponse
+	if err := json.Unmarshal(body, &tr); err != nil {
+		return AccountInfo{}, fmt.Errorf("decode token response: %w", err)
+	}
+
+	// Preserve the original refresh token if the server didn't rotate it.
+	if tr.RefreshToken == "" {
+		tr.RefreshToken = refreshToken
+	}
+
+	cache := TokenCache{
+		AccessToken:  tr.AccessToken,
+		RefreshToken: tr.RefreshToken,
+		TokenType:    tr.TokenType,
+		Scope:        tr.Scope,
+		ExpiresAt:    m.nowUTC().Add(time.Duration(tr.ExpiresIn) * time.Second),
+		IDToken:      tr.IDToken,
+	}
+	if err := m.saveToken(input.ProfileName, cache); err != nil {
+		return AccountInfo{}, err
+	}
+
+	claims, _ := parseIDClaims(tr.IDToken)
+	return accountFromClaims(claims), nil
 }
 
 func (m *Manager) LoginAppOnly(ctx context.Context, input AppOnlyLoginInput) error {
@@ -485,9 +559,12 @@ func (m *Manager) acquireDelegatedTokenRefresh(
 	req.Set("scope", strings.Join(scopes, " "))
 
 	// Include client_secret for confidential client apps if one is stored.
+	// Also use .default scope, since confidential clients typically obtain
+	// tokens via .default and individual scope names may not be consented.
 	if secretKey, err := delegatedSecretKey(profileName); err == nil {
 		if secret, err := secrets.GetSecret(secretKey); err == nil && len(secret) > 0 {
 			req.Set("client_secret", string(secret))
+			req.Set("scope", "offline_access openid profile "+graphDefaultScope())
 			secureZero(secret)
 		}
 	}

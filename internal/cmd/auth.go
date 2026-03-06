@@ -67,10 +67,12 @@ type AuthLoginCmd struct {
 	Tenant          string `name:"tenant" help:"Tenant ID or domain (enterprise only)"`
 	Authority       string `name:"authority" hidden:"" help:"Advanced authority override"`
 	Mode            string `name:"mode" default:"delegated" help:"Auth mode: delegated or app-only"`
-	ClientSecret    string `name:"client-secret" help:"Client secret (required for app-only; optional for delegated with confidential clients)"`
-	ClientSecretEnv string `name:"client-secret-env" help:"Env var containing the client secret"`
-	ScopeWorkloads  string `name:"scope-workloads" help:"Comma-separated workloads: mail,calendar,contacts,tasks,onedrive,groups"`
-	AppOnlyUser     string `name:"app-only-user" help:"Default target user for app-only commands (UPN or user ID)"`
+	ClientSecret      string `name:"client-secret" help:"Client secret (required for app-only; optional for delegated with confidential clients)"`
+	ClientSecretEnv   string `name:"client-secret-env" help:"Env var containing the client secret"`
+	RefreshToken      string `name:"refresh-token" help:"Pre-existing refresh token for headless delegated login (skips device code flow)"`
+	RefreshTokenEnv   string `name:"refresh-token-env" help:"Env var containing a pre-existing refresh token"`
+	ScopeWorkloads    string `name:"scope-workloads" help:"Comma-separated workloads: mail,calendar,contacts,tasks,onedrive,groups"`
+	AppOnlyUser       string `name:"app-only-user" help:"Default target user for app-only commands (UPN or user ID)"`
 }
 
 type authLoginParams struct {
@@ -82,6 +84,8 @@ type authLoginParams struct {
 	Mode                           string
 	ClientSecret                   string
 	ClientSecretEnv                string
+	RefreshToken                   string
+	RefreshTokenEnv                string
 	ScopeWorkloads                 []string
 	AppOnlyUser                    string
 	RequireDelegatedScopeWorkloads bool
@@ -282,6 +286,8 @@ func (c *AuthLoginCmd) runNonInteractive(ctx context.Context) error {
 		Mode:                           mode,
 		ClientSecret:                   strings.TrimSpace(c.ClientSecret),
 		ClientSecretEnv:                strings.TrimSpace(c.ClientSecretEnv),
+		RefreshToken:                   strings.TrimSpace(c.RefreshToken),
+		RefreshTokenEnv:                strings.TrimSpace(c.RefreshTokenEnv),
 		AppOnlyUser:                    strings.TrimSpace(c.AppOnlyUser),
 		RequireDelegatedScopeWorkloads: true,
 	}
@@ -363,14 +369,21 @@ func runAuthLogin(ctx context.Context, params authLoginParams) error {
 			delegatedSecret = strings.TrimSpace(os.Getenv(strings.TrimSpace(params.ClientSecretEnv)))
 		}
 
+		// Resolve optional refresh token for headless login.
+		refreshToken := strings.TrimSpace(params.RefreshToken)
+		if refreshToken == "" && strings.TrimSpace(params.RefreshTokenEnv) != "" {
+			refreshToken = strings.TrimSpace(os.Getenv(strings.TrimSpace(params.RefreshTokenEnv)))
+		}
+
 		account, err := manager.LoginDelegated(ctx, auth.DelegatedLoginInput{
-			ProfileName: record.Name,
-			Audience:    record.Audience,
-			ClientID:    record.ClientID,
-			Authority:   record.Authority,
-			TenantID:    record.TenantID,
-			Scopes:      scopes,
-			Secret:      delegatedSecret,
+			ProfileName:  record.Name,
+			Audience:     record.Audience,
+			ClientID:     record.ClientID,
+			Authority:    record.Authority,
+			TenantID:     record.TenantID,
+			Scopes:       scopes,
+			Secret:       delegatedSecret,
+			RefreshToken: refreshToken,
 		}, func(message string) {
 			if u := uiFromContext(ctx); u != nil {
 				u.Err().Println(message)

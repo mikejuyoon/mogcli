@@ -467,6 +467,120 @@ func TestLoginDelegatedStoresClientSecret(t *testing.T) {
 	}
 }
 
+func TestLoginDelegatedRefreshTokenSkipsDeviceCode(t *testing.T) {
+	setTempSecretsHome(t)
+
+	now := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+	var capturedGrantType, capturedRefreshToken, capturedClientSecret string
+
+	manager := NewManager()
+	manager.now = func() time.Time { return now }
+	manager.HTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			values, err := url.ParseQuery(string(body))
+			if err != nil {
+				t.Fatalf("parse request body: %v", err)
+			}
+			capturedGrantType = values.Get("grant_type")
+			capturedRefreshToken = values.Get("refresh_token")
+			capturedClientSecret = values.Get("client_secret")
+
+			idToken := idTokenFor(t, "account-1", "tenant-1")
+			payload := `{"token_type":"Bearer","scope":"Mail.Read","expires_in":3600,"access_token":"fresh-token","refresh_token":"rotated-refresh","id_token":"` + idToken + `"}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(payload)),
+			}, nil
+		}),
+	}
+
+	account, err := manager.LoginDelegated(context.Background(), DelegatedLoginInput{
+		ProfileName:  "headless",
+		Audience:     "enterprise",
+		ClientID:     "client-id",
+		Authority:    "organizations",
+		Scopes:       []string{"Mail.Read"},
+		Secret:       "my-secret",
+		RefreshToken: "existing-refresh-token",
+	}, nil)
+	if err != nil {
+		t.Fatalf("LoginDelegated with refresh token failed: %v", err)
+	}
+
+	// Verify it used refresh_token grant, not device_code.
+	if capturedGrantType != "refresh_token" {
+		t.Fatalf("expected grant_type=refresh_token, got %q", capturedGrantType)
+	}
+	if capturedRefreshToken != "existing-refresh-token" {
+		t.Fatalf("expected refresh_token in request, got %q", capturedRefreshToken)
+	}
+	if capturedClientSecret != "my-secret" {
+		t.Fatalf("expected client_secret in request, got %q", capturedClientSecret)
+	}
+
+	// Verify account info was extracted from ID token.
+	if account.AccountID != "account-1" {
+		t.Fatalf("expected account ID account-1, got %q", account.AccountID)
+	}
+
+	// Verify token was saved.
+	cache, err := manager.loadToken("headless")
+	if err != nil {
+		t.Fatalf("loadToken failed: %v", err)
+	}
+	if cache.AccessToken != "fresh-token" {
+		t.Fatalf("expected access token fresh-token, got %q", cache.AccessToken)
+	}
+	if cache.RefreshToken != "rotated-refresh" {
+		t.Fatalf("expected rotated refresh token, got %q", cache.RefreshToken)
+	}
+}
+
+func TestLoginDelegatedRefreshTokenPreservesOriginalWhenNotRotated(t *testing.T) {
+	setTempSecretsHome(t)
+
+	now := time.Date(2026, 2, 12, 12, 0, 0, 0, time.UTC)
+	manager := NewManager()
+	manager.now = func() time.Time { return now }
+	manager.HTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			idToken := idTokenFor(t, "account-1", "tenant-1")
+			// Server does NOT return a new refresh token.
+			payload := `{"token_type":"Bearer","scope":"Mail.Read","expires_in":3600,"access_token":"fresh-token","id_token":"` + idToken + `"}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(payload)),
+			}, nil
+		}),
+	}
+
+	_, err := manager.LoginDelegated(context.Background(), DelegatedLoginInput{
+		ProfileName:  "headless-no-rotate",
+		Audience:     "enterprise",
+		ClientID:     "client-id",
+		Authority:    "organizations",
+		Scopes:       []string{"Mail.Read"},
+		RefreshToken: "original-refresh",
+	}, nil)
+	if err != nil {
+		t.Fatalf("LoginDelegated failed: %v", err)
+	}
+
+	cache, err := manager.loadToken("headless-no-rotate")
+	if err != nil {
+		t.Fatalf("loadToken failed: %v", err)
+	}
+	if cache.RefreshToken != "original-refresh" {
+		t.Fatalf("expected original refresh token preserved, got %q", cache.RefreshToken)
+	}
+}
+
 func TestTokenCacheKeyRejectsInvalidProfileName(t *testing.T) {
 	if _, err := tokenCacheKey("../bad-profile"); err == nil {
 		t.Fatal("expected invalid profile name error")
