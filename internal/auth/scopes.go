@@ -125,7 +125,19 @@ func scopeSetContainsAll(granted []string, required []string) bool {
 
 	grantedSet := map[string]struct{}{}
 	for _, scope := range granted {
-		grantedSet[strings.ToLower(strings.TrimSpace(scope))] = struct{}{}
+		key := strings.ToLower(strings.TrimSpace(scope))
+		grantedSet[key] = struct{}{}
+		// Azure AD returns scopes as full URLs (e.g.
+		// "https://graph.microsoft.com/Mail.Read"). Also index by the
+		// short form so callers using "Mail.Read" match correctly.
+		if short := stripGraphPrefix(key); short != key {
+			grantedSet[short] = struct{}{}
+		}
+	}
+
+	// If the granted set contains .default, all Graph scopes are covered.
+	if _, ok := grantedSet["https://graph.microsoft.com/.default"]; ok {
+		return true
 	}
 
 	for _, scope := range required {
@@ -135,4 +147,13 @@ func scopeSetContainsAll(granted []string, required []string) bool {
 	}
 
 	return true
+}
+
+const graphScopePrefix = "https://graph.microsoft.com/"
+
+func stripGraphPrefix(scope string) string {
+	if strings.HasPrefix(scope, graphScopePrefix) {
+		return scope[len(graphScopePrefix):]
+	}
+	return scope
 }

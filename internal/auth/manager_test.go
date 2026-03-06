@@ -581,6 +581,38 @@ func TestLoginDelegatedRefreshTokenPreservesOriginalWhenNotRotated(t *testing.T)
 	}
 }
 
+func TestScopeSetContainsAllMatchesFullURLScopes(t *testing.T) {
+	granted := []string{"https://graph.microsoft.com/Mail.Read", "https://graph.microsoft.com/Mail.Send"}
+	required := []string{"Mail.Read"}
+	if !scopeSetContainsAll(granted, required) {
+		t.Fatal("expected full-URL scope to match short-form required scope")
+	}
+}
+
+func TestScopeSetContainsAllDefaultCoversAll(t *testing.T) {
+	granted := []string{"openid", "profile", "https://graph.microsoft.com/.default"}
+	required := []string{"Mail.Read", "Calendars.ReadWrite"}
+	if !scopeSetContainsAll(granted, required) {
+		t.Fatal("expected .default scope to cover all required scopes")
+	}
+}
+
+func TestScopeSetContainsAllShortFormStillWorks(t *testing.T) {
+	granted := []string{"Mail.Read", "Mail.Send"}
+	required := []string{"Mail.Read"}
+	if !scopeSetContainsAll(granted, required) {
+		t.Fatal("expected short-form scope match to still work")
+	}
+}
+
+func TestScopeSetContainsAllMissingScope(t *testing.T) {
+	granted := []string{"https://graph.microsoft.com/Mail.Read"}
+	required := []string{"Mail.Read", "Calendars.ReadWrite"}
+	if scopeSetContainsAll(granted, required) {
+		t.Fatal("expected missing Calendars.ReadWrite to fail")
+	}
+}
+
 func TestTokenCacheKeyRejectsInvalidProfileName(t *testing.T) {
 	if _, err := tokenCacheKey("../bad-profile"); err == nil {
 		t.Fatal("expected invalid profile name error")

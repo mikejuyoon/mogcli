@@ -552,19 +552,25 @@ func (m *Manager) acquireDelegatedTokenRefresh(
 		return "", ErrMissingRefreshToken
 	}
 
+	// Use .default scope for refresh when the cached token was obtained via
+	// .default. This avoids AADSTS65001 consent errors when the original
+	// token was granted with .default but individual scopes (Mail.Read, etc.)
+	// were never individually consented.
+	refreshScope := strings.Join(scopes, " ")
+	if strings.Contains(strings.ToLower(cache.Scope), "/.default") {
+		refreshScope = "offline_access openid profile " + graphDefaultScope()
+	}
+
 	req := url.Values{}
 	req.Set("grant_type", "refresh_token")
 	req.Set("client_id", clientID)
 	req.Set("refresh_token", cache.RefreshToken)
-	req.Set("scope", strings.Join(scopes, " "))
+	req.Set("scope", refreshScope)
 
 	// Include client_secret for confidential client apps if one is stored.
-	// Also use .default scope, since confidential clients typically obtain
-	// tokens via .default and individual scope names may not be consented.
 	if secretKey, err := delegatedSecretKey(profileName); err == nil {
 		if secret, err := secrets.GetSecret(secretKey); err == nil && len(secret) > 0 {
 			req.Set("client_secret", string(secret))
-			req.Set("scope", "offline_access openid profile "+graphDefaultScope())
 			secureZero(secret)
 		}
 	}
