@@ -83,6 +83,14 @@ func appSecretKey(profileName string) (string, error) {
 	return "mog:appsecret:" + normalized, nil
 }
 
+func delegatedSecretKey(profileName string) (string, error) {
+	normalized, err := profile.NormalizeName(profileName)
+	if err != nil {
+		return "", fmt.Errorf("invalid profile name: %w", err)
+	}
+	return "mog:delegatedsecret:" + normalized, nil
+}
+
 func graphDefaultScope() string {
 	return "https://graph.microsoft.com/.default"
 }
@@ -139,6 +147,19 @@ func (m *Manager) LoginDelegated(ctx context.Context, input DelegatedLoginInput,
 	input.Scopes = normalizeScopes(input.Scopes)
 	if len(input.Scopes) == 0 {
 		input.Scopes = BaseDelegatedScopes
+	}
+
+	// Persist client secret for confidential client delegated flows.
+	if secret := strings.TrimSpace(input.Secret); secret != "" {
+		secretKey, err := delegatedSecretKey(input.ProfileName)
+		if err != nil {
+			return AccountInfo{}, err
+		}
+		secretBytes := []byte(secret)
+		defer secureZero(secretBytes)
+		if err := secrets.SetSecret(secretKey, secretBytes); err != nil {
+			return AccountInfo{}, fmt.Errorf("store client secret: %w", err)
+		}
 	}
 
 	if useWAM() {
@@ -463,6 +484,14 @@ func (m *Manager) acquireDelegatedTokenRefresh(
 	req.Set("refresh_token", cache.RefreshToken)
 	req.Set("scope", strings.Join(scopes, " "))
 
+	// Include client_secret for confidential client apps if one is stored.
+	if secretKey, err := delegatedSecretKey(profileName); err == nil {
+		if secret, err := secrets.GetSecret(secretKey); err == nil && len(secret) > 0 {
+			req.Set("client_secret", string(secret))
+			secureZero(secret)
+		}
+	}
+
 	body, status, err := m.doFormWithStatus(ctx, endpoint(authority, "/oauth2/v2.0/token"), req)
 	if err != nil {
 		return "", err
@@ -577,6 +606,11 @@ func (m *Manager) Logout(profileName string) error {
 	}
 	if err := secrets.DeleteSecret(secretKey); err != nil {
 		return err
+	}
+
+	// Clean up delegated client secret if stored.
+	if delSecretKey, err := delegatedSecretKey(profileName); err == nil {
+		_ = secrets.DeleteSecret(delSecretKey)
 	}
 
 	return nil

@@ -9,6 +9,7 @@ type DelegatedLoginInput struct {
 	Authority   string
 	TenantID    string
 	Scopes      []string
+	Secret      string // Optional client secret for confidential client apps
 }
 
 type AppOnlyLoginInput struct {

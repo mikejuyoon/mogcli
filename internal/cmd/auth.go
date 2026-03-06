@@ -67,8 +67,8 @@ type AuthLoginCmd struct {
 	Tenant          string `name:"tenant" help:"Tenant ID or domain (enterprise only)"`
 	Authority       string `name:"authority" hidden:"" help:"Advanced authority override"`
 	Mode            string `name:"mode" default:"delegated" help:"Auth mode: delegated or app-only"`
-	ClientSecret    string `name:"client-secret" help:"Client secret for app-only mode"`
-	ClientSecretEnv string `name:"client-secret-env" help:"Env var containing the app-only client secret"`
+	ClientSecret    string `name:"client-secret" help:"Client secret (required for app-only; optional for delegated with confidential clients)"`
+	ClientSecretEnv string `name:"client-secret-env" help:"Env var containing the client secret"`
 	ScopeWorkloads  string `name:"scope-workloads" help:"Comma-separated workloads: mail,calendar,contacts,tasks,onedrive,groups"`
 	AppOnlyUser     string `name:"app-only-user" help:"Default target user for app-only commands (UPN or user ID)"`
 }
@@ -357,6 +357,12 @@ func runAuthLogin(ctx context.Context, params authLoginParams) error {
 			return usage(err.Error())
 		}
 
+		// Resolve optional client secret for confidential client delegated flows.
+		delegatedSecret := strings.TrimSpace(params.ClientSecret)
+		if delegatedSecret == "" && strings.TrimSpace(params.ClientSecretEnv) != "" {
+			delegatedSecret = strings.TrimSpace(os.Getenv(strings.TrimSpace(params.ClientSecretEnv)))
+		}
+
 		account, err := manager.LoginDelegated(ctx, auth.DelegatedLoginInput{
 			ProfileName: record.Name,
 			Audience:    record.Audience,
@@ -364,6 +370,7 @@ func runAuthLogin(ctx context.Context, params authLoginParams) error {
 			Authority:   record.Authority,
 			TenantID:    record.TenantID,
 			Scopes:      scopes,
+			Secret:      delegatedSecret,
 		}, func(message string) {
 			if u := uiFromContext(ctx); u != nil {
 				u.Err().Println(message)
